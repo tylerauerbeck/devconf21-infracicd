@@ -1,0 +1,28 @@
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: ansible-inventory 
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/tags: cli
+    tekton.dev/displayName: "ansible-inventory"
+spec:
+  description: >-
+    This task performs setting ansible inventory based on the VM that just got created
+  workspaces:
+    - name: output
+      description: The git repo will be cloned onto the volume backing this workspace
+  params:
+    - description: Name of a VM to execute the action in.
+      name: vmName
+      type: string
+  steps:
+    - name: create-inventory
+      image: quay.io/openshift/origin-cli:4.8
+      script: |
+        #!/bin/bash
+        IP=$(oc get vmi $(params.vmName) -o=jsonpath='{.status.interfaces[0].ipAddress}')
+        echo "[dns-server]" > $(workspaces.output.path)/inventory/ansible/inventory/hosts
+        echo $IP >> $(workspaces.output.path)/inventory/ansible/inventory/hosts

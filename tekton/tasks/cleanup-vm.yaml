@@ -1,0 +1,124 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  annotations:
+    task.kubevirt.io/associatedServiceAccount: cleanup-vm-task
+    vmNamespace.params.task.kubevirt.io/type: namespace
+    secretName.params.task.kubevirt.io/type: execute-in-vm-secret
+    script.params.task.kubevirt.io/type: script
+    delete.params.task.kubevirt.io/type: boolean
+    stop.params.task.kubevirt.io/type: boolean
+    timeout.params.task.kubevirt.io/type: duration
+  labels:
+    task.kubevirt.io/type: cleanup-vm
+    task.kubevirt.io/category: execute-in-vm
+  name: cleanup-vm
+spec:
+  params:
+    - description: Name of a VM to execute the action in.
+      name: vmName
+      type: string
+    - description: Namespace of a VM to execute the action in. (defaults to active namespace)
+      name: vmNamespace
+      type: string
+      default: ""
+    - description: Stops the VM after executing the commands when set to true.
+      name: stop
+      type: string
+      default: "true"
+    - description: Deletes the VM after executing the commands when set to true.
+      name: delete
+      type: string
+      default: "false"
+    - description: Timeout for the command/script (includes potential VM start). The VM will be stopped or deleted accordingly once the timout expires. Should be in a 3h2m1s format.
+      name: timeout
+      type: string
+      default: "30m"
+    - description: Secret to use when connecting to a VM.
+      name: secretName
+      type: string
+      default: "__empty__"
+    - description: Command to execute in a VM.
+      name: command
+      type: array
+      default: []
+    - description: Arguments of a command.
+      name: args
+      type: array
+      default: []
+    - description: Script to execute in a VM.
+      name: script
+      type: string
+      default: ""
+  steps:
+    - name: execute-in-vm
+      image: quay.io/kubevirt/tekton-task-execute-in-vm:v0.0.7
+      command:
+        - entrypoint
+      args:
+        - '--stop'
+        - $(params.stop)
+        - '--delete'
+        - $(params.delete)
+        - '--timeout'
+        - $(params.timeout)
+        - '--'
+        - $(params.command)
+        - $(params.args)
+      env:
+        - name: VM_NAME
+          value: $(params.vmName)
+        - name: VM_NAMESPACE
+          value: $(params.vmNamespace)
+        - name: EXECUTE_SCRIPT
+          value: $(params.script)
+        - name: CONNECTION_SECRET_NAME
+          value: $(params.secretName)
+      volumeMounts:
+        - mountPath: /data/connectionsecret/
+          name: connectionsecret
+          readOnly: true
+  volumes:
+    - name: connectionsecret
+      secret:
+        secretName: $(params.secretName)
+        optional: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cleanup-vm-task
+rules:
+  - verbs:
+      - get
+      - list
+      - watch
+      - delete
+    apiGroups:
+      - kubevirt.io
+    resources:
+      - virtualmachines
+      - virtualmachineinstances
+  - verbs:
+      - update
+    apiGroups:
+      - subresources.kubevirt.io
+    resources:
+      - virtualmachines/start
+      - virtualmachines/stop
+      - virtualmachines/restart
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cleanup-vm-task
+roleRef:
+  kind: ClusterRole
+  name: cleanup-vm-task
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: pipeline 

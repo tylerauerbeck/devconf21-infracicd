@@ -1,0 +1,224 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: dns-ansible-pipeline
+spec:
+  workspaces:
+  - name: playbooks
+    description: |
+      This workspace will contain ansible playbooks
+  tasks:
+    - name: get-inventories
+      taskRef:
+        name: git-clone
+      workspaces:
+      - name: output
+        workspace: playbooks
+      params:
+#TODO: Replace url and revision with params
+      - name: url
+        value: https://github.com/tylerauerbeck/devconf21-infracicd
+      - name: revision
+        value: "main"
+      - name: deleteExisting
+        value: "true"
+      - name: subdirectory
+        value: "inventory"
+    - name: get-playbooks
+      taskRef:
+        name: git-clone
+      workspaces:
+      - name: output
+        workspace: playbooks
+      params:
+#TODO: Replace url and revision with params
+      - name: url
+        value: https://github.com/tylerauerbeck/infra-ansible
+      - name: revision
+        value: "py3-config-dns-server-bind"
+      - name: deleteExisting
+        value: "true"
+      - name: subdirectory
+        value: "infra-ansible"
+      runAfter:
+        - get-inventories
+    - name: lint-dns
+      workspaces:
+      - name: output
+        workspace: playbooks
+      taskRef:
+        name: ansible-lint
+      params:
+        - name: SKIP_LIST
+          value: "106,206,208,301,303,305"
+        - name: ARGS
+          value: ["$(workspaces.output.path)/infra-ansible/roles/dns/config-dns-server-bind/"]
+      runAfter:
+        - get-inventories
+        - get-playbooks
+    - name: generate-keys
+      taskRef:
+        name: generate-ssh-keys
+      params:
+        - name: publicKeySecretName
+          value: dns-test-pub-$(context.pipelineRun.uid)
+        - name: privateKeySecretName
+          value: dns-test-priv-$(context.pipelineRun.uid)
+        - name: privateKeyConnectionOptions
+          value:
+            - 'user:fedora'
+            - 'disable-strict-host-key-checking:true'
+            - 'additional-ssh-options:-T'
+    - name: create-vm
+      taskRef:
+        name: create-vm-from-manifest
+      params:
+        - name: manifest
+          value: |
+            apiVersion: kubevirt.io/v1
+            kind: VirtualMachine
+            metadata:
+              labels:
+                kubevirt.io/vm: vm-fedora
+              generateName: vm-fedora-
+            spec:
+              running: true 
+              template:
+                metadata:
+                  labels:
+                    kubevirt.io/vm: vm-fedora
+                spec:
+                  accessCredentials:
+                    - sshPublicKey:
+                        source:
+                          secret:
+                            secretName: $(tasks.generate-keys.results.publicKeySecretName)
+                        propagationMethod:
+                          configDrive: {}
+                  readinessProbe:
+                    tcpSocket:
+                      port: 22
+                    initialDelaySeconds: 120
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 10
+                    successThreshold: 1
+                  networks:
+                  - name: default
+                    pod: {}
+                  domain:
+                    devices:
+                      interfaces:
+                        - name: default
+                          masquerade: {}
+                      disks:
+                      - disk:
+                          bus: virtio
+                        name: containerdisk
+                      - name: cloudinitdrive
+                        disk:
+                          bus: virtio
+                      rng: {}
+                    machine:
+                      type: ""
+                    resources:
+                      requests:
+                        memory: 8Gi
+                        cpu: "4"
+                  terminationGracePeriodSeconds: 0
+                  volumes:
+                  - containerDisk:
+                      image: kubevirt/fedora-cloud-container-disk-demo:v0.32.0
+                    name: containerdisk
+                  - name: cloudinitdrive
+                    cloudInitConfigDrive:
+                      userData: |
+                        #cloud-config
+                        password: fedora
+                        hostname: fedora
+                        chpasswd: { expire: False }
+      runAfter:
+        - lint-dns
+        - generate-keys
+# #TODO: Not sure if we're not using this correctly or if it's just not as robust as we need it to be. By the time ansible-runner
+# #      kicks off, the VM still isn't ready so it fails on connecting to port 22. I'm wondering if maybe we can just use the
+# #      oc client task and do something like oc wait --for=condition=Ready or something of that sort.
+# #    - name: wait-for-vm
+# #      retries: 5
+# #      taskRef:
+# #        name: wait-for-vmi-status
+# #      params:
+# #        - name: vmiName
+# #          value: "$(tasks.create-vm.results.name)"
+# #        - name: successCondition
+# #          value: "status.phase == Running"
+# #        - name: failureCondition
+# #          value: "status.phase != Running"
+# #      runAfter:
+# #        - create-vm
+    - name: wait-for-vm
+      taskRef:
+        name: kubernetes-actions
+      params:
+        - name: script
+          value: |
+             POD=$(kubectl get pod -o=jsonpath='{.items[?(.metadata.annotations.kubevirt\.io/domain == "$(tasks.create-vm.results.name)")].metadata.name}')
+             echo $POD
+             kubectl wait --for condition=Ready --timeout=6m pod/$POD 
+      runAfter:
+        - create-vm
+#    - name: execute-in-vm-dnf
+#      runAfter:
+#        - wait-for-vm
+#        - generate-keys
+#      taskRef:
+#        name: execute-in-vm
+#      params:
+#        - name: vmName
+#          value: "$(tasks.create-vm.results.name)"
+#        - name: secretName
+#          value: "$(tasks.generate-keys.results.privateKeySecretName)"
+#        - name: script
+#          value: |
+#            sudo echo 'max_parallel_downloads=10' >> /etc/dnf/dnf.conf
+#            sudo echo 'fastestmirror=True' >> /etc/dnf/dnf.conf
+    - name: set-inventory
+      taskRef:
+        name: ansible-inventory
+      workspaces:
+      - name: output
+        workspace: playbooks
+      params:
+        - name: vmName
+          value: "$(tasks.create-vm.results.name)"
+      runAfter:
+        - wait-for-vm
+    - name: ansible-run
+      taskRef:
+        name: ansible-runner
+      runAfter:
+        - set-inventory
+      workspaces:
+        - name: runner-dir
+          workspace: playbooks
+      params:
+        - name: project-dir
+          value: $(workspaces.runner-dir.path)/inventory/ansible
+#        - name: args
+#          value: ['-p', $(workspaces.runner-dir.path)/infra-ansible/playbooks/provision-dns-server/configure-dns-server-bind.yml, '--inventory', $(workspaces.runner-dir.path)/inventory/ansible/inventory]
+        - name: secret-name
+          value: "$(tasks.generate-keys.results.privateKeySecretName)"
+    - name: execute-in-vm-dnf
+      runAfter:
+        - ansible-run 
+      taskRef:
+        name: execute-in-vm
+      params:
+        - name: vmName
+          value: "$(tasks.create-vm.results.name)"
+        - name: secretName
+          value: "$(tasks.generate-keys.results.privateKeySecretName)"
+        - name: script
+          value: |
+            DNS=$(dig NS rht-labs.io @127.0.0.1 +short)
+            test ! -z $DNS 

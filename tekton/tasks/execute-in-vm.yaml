@@ -1,0 +1,102 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  annotations:
+    task.kubevirt.io/associatedServiceAccount: execute-in-vm-task
+    vmNamespace.params.task.kubevirt.io/type: namespace
+    secretName.params.task.kubevirt.io/type: execute-in-vm-secret
+    script.params.task.kubevirt.io/type: script
+  labels:
+    task.kubevirt.io/type: execute-in-vm
+    task.kubevirt.io/category: execute-in-vm
+  name: execute-in-vm
+spec:
+  params:
+    - description: Name of a VM to execute the action in.
+      name: vmName
+      type: string
+    - description: Namespace of a VM to execute the action in. (defaults to active namespace)
+      name: vmNamespace
+      type: string
+      default: ""
+    - description: Secret to use when connecting to a VM.
+      name: secretName
+      type: string
+      default: "__empty__"
+    - description: Command to execute in a VM.
+      name: command
+      type: array
+      default: []
+    - description: Arguments of a command.
+      name: args
+      type: array
+      default: []
+    - description: Script to execute in a VM.
+      name: script
+      type: string
+      default: ""
+  steps:
+    - name: execute-in-vm
+      image: quay.io/kubevirt/tekton-task-execute-in-vm:v0.0.7
+      command:
+        - entrypoint
+      args:
+        - '--'
+        - $(params.command)
+        - $(params.args)
+      env:
+        - name: VM_NAME
+          value: $(params.vmName)
+        - name: VM_NAMESPACE
+          value: $(params.vmNamespace)
+        - name: EXECUTE_SCRIPT
+          value: $(params.script)
+        - name: CONNECTION_SECRET_NAME
+          value: $(params.secretName)
+      volumeMounts:
+        - mountPath: /data/connectionsecret/
+          name: connectionsecret
+          readOnly: true
+  volumes:
+    - name: connectionsecret
+      secret:
+        secretName: $(params.secretName)
+        optional: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: execute-in-vm-task
+rules:
+  - verbs:
+      - get
+      - list
+      - watch
+    apiGroups:
+      - kubevirt.io
+    resources:
+      - virtualmachines
+      - virtualmachineinstances
+  - verbs:
+      - update
+    apiGroups:
+      - subresources.kubevirt.io
+    resources:
+      - virtualmachines/start
+      - virtualmachines/stop
+      - virtualmachines/restart
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: execute-in-vm-task
+roleRef:
+  kind: ClusterRole
+  name: execute-in-vm-task
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: pipeline

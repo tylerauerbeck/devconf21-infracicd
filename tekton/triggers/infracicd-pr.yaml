@@ -1,0 +1,49 @@
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: infracicd-pr
+spec:
+  params:
+  - name: git-repo-url
+  - name: pullreq-sha
+  - name: pullreq-action
+  - name: pullreq-number
+  - name: pullreq-repo-full_name
+  - name: pullreq-html-url
+  - name: pullreq-title
+  - name: pullreq-issue-url
+  - name: organisations-url
+  - name: user-type
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      annotations: {}
+      labels:
+        tekton.dev/pipeline: dns-ansible-pipeline
+      name: dns-ansible-pipeline-pr-$(uid) 
+    spec:
+      params: []
+      pipelineRef:
+        name: dns-ansible-pipeline
+      resources: []
+      status: null
+      workspaces:
+      - name: playbooks
+        volumeClaimTemplate:
+          metadata:
+            name: ws-pr-playbooks-$(uid)
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+               requests:
+                  storage: 1Gi
+      - name: inventories
+        volumeClaimTemplate:
+          metadata:
+            name: ws-pr-inventories-$(uid)
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+               requests:
+                  storage: 1Gi

@@ -1,0 +1,120 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  annotations:
+    task.kubevirt.io/associatedServiceAccount: create-vm-from-manifest-task
+    manifest.params.task.kubevirt.io/type: resource-yaml
+    manifest.params.task.kubevirt.io/kind: VirtualMachine
+    manifest.params.task.kubevirt.io/apiVersion: kubevirt.io/v1
+    namespace.params.task.kubevirt.io/type: namespace
+    dataVolumes.params.task.kubevirt.io/kind: DataVolume
+    dataVolumes.params.task.kubevirt.io/apiVersion: cdi.kubevirt.io/v1beta1
+    ownDataVolumes.params.task.kubevirt.io/kind: DataVolume
+    ownDataVolumes.params.task.kubevirt.io/apiVersion: cdi.kubevirt.io/v1beta1
+    persistentVolumeClaims.params.task.kubevirt.io/kind: PersistentVolumeClaim
+    persistentVolumeClaims.params.task.kubevirt.io/apiVersion: v1
+    ownPersistentVolumeClaims.params.task.kubevirt.io/kind: PersistentVolumeClaim
+    ownPersistentVolumeClaims.params.task.kubevirt.io/apiVersion: v1
+  labels:
+    task.kubevirt.io/type: create-vm-from-manifest
+    task.kubevirt.io/category: create-vm
+  name: create-vm-from-manifest
+spec:
+  params:
+    - name: manifest
+      description: YAML manifest of a VirtualMachine resource to be created.
+      type: string
+    - name: namespace
+      description: Namespace where to create the VM. (defaults to manifest namespace or active namespace)
+      default: ""
+      type: string
+    - name: dataVolumes
+      description: Add DVs to VM Volumes. Replaces a particular volume if in VOLUME_NAME:DV_NAME format. Eg. ["rootdisk:my-dv", "my-dv2"]
+      default: []
+      type: array
+    - name: ownDataVolumes
+      description: Add DVs to VM Volumes and add VM to DV ownerReferences. These DataVolumes will be deleted once the created VM gets deleted. Replaces a particular volume if in VOLUME_NAME:DV_NAME format. Eg. ["rootdisk:my-dv", "my-dv2"]
+      default: []
+      type: array
+    - name: persistentVolumeClaims
+      description: Add PVCs to VM Volumes. Replaces a particular volume if in VOLUME_NAME:PVC_NAME format. Eg. ["rootdisk:my-pvc", "my-pvc2"]
+      default: []
+      type: array
+    - name: ownPersistentVolumeClaims
+      description: Add PVCs to VM Volumes and add VM to PVC ownerReferences. These PVCs will be deleted once the created VM gets deleted. Replaces a particular volume if in VOLUME_NAME:PVC_NAME format. Eg. ["rootdisk:my-pvc", "my-pvc2"]
+      default: []
+      type: array
+  results:
+    - name: name
+      description: The name of a VM that was created.
+    - name: namespace
+      description: The namespace of a VM that was created.
+  steps:
+    - name: createvm
+      image: quay.io/kubevirt/tekton-task-create-vm:v0.0.7
+      command:
+        - create-vm
+      args:
+        - "--output=yaml"
+        - '--dvs'
+        - $(params.dataVolumes)
+        - '--own-dvs'
+        - $(params.ownDataVolumes)
+        - '--pvcs'
+        - $(params.persistentVolumeClaims)
+        - '--own-pvcs'
+        - $(params.ownPersistentVolumeClaims)
+      env:
+        - name: VM_MANIFEST
+          value: $(params.manifest)
+        - name: VM_NAMESPACE
+          value: $(params.namespace)
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: create-vm-from-manifest-task
+rules:
+  - verbs:
+      - get
+      - list
+      - watch
+      - create
+    apiGroups:
+      - kubevirt.io
+    resources:
+      - virtualmachines
+      - virtualmachineinstances
+  - verbs:
+      - '*'
+    apiGroups:
+      - kubevirt.io
+    resources:
+      - virtualmachines/finalizers
+  - verbs:
+      - '*'
+    apiGroups:
+      - ''
+    resources:
+      - persistentvolumeclaims
+  - verbs:
+      - '*'
+    apiGroups:
+      - cdi.kubevirt.io
+    resources:
+      - datavolumes
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: create-vm-from-manifest-task
+roleRef:
+  kind: ClusterRole
+  name: create-vm-from-manifest-task
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: pipeline 

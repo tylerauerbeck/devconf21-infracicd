@@ -1,0 +1,15 @@
+---
+
+ansible_become: true
+
+dns_data:
+  views:
+  - name: private
+    zones:
+      - dns_domain: "rht-labs.io"
+        named: true
+        state: present
+    named:
+      recursion: 'yes'
+#    default_forwarders:
+#    - 8.8.8.8
